@@ -60,7 +60,7 @@ function installChromeShim() {
 const { store } = installChromeShim();
 
 // Import AFTER the shim is installed.
-const sessionMgr = (await import('../../../chrome/background/session_manager.js')).default;
+const sessionMgr = (await import('../../../nexus-agent-chrome/background/session_manager.js')).default;
 
 function clearStore() { store.clear(); }
 

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import {
   computeBadgeConfig,
   STATES,
-} from '../../../chrome/background/badge_manager.js';
+} from '../../../nexus-agent-chrome/background/badge_manager.js';
 
 test('computeBadgeConfig OFFLINE returns offline prefix and empty badge', () => {
   const cfg = computeBadgeConfig(STATES.OFFLINE);

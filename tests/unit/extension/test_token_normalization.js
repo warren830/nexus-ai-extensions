@@ -42,8 +42,8 @@ describe('options.readToken whitespace scrub', () => {
     // terminal word-wrap on paste.
     const corrupted = 'eyJ1aWQiOiJhYmMiL   CJleHAiOjF9.sig=';
     assert.strictEqual(
-      readToken(corrupted),
-      'eyJ1aWQiOiJhYmMiLCJleHAiOjF9.sig=',
+        readToken(corrupted),
+        'eyJ1aWQiOiJhYmMiLCJleHAiOjF9.sig=',
     );
   });
 

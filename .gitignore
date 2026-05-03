@@ -1,4 +1,4 @@
 node_modules/
 .DS_Store
-chrome/dist/
+nexus-agent-chrome/dist/
 *.log

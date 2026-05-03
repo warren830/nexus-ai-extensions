@@ -2,7 +2,7 @@
  * Unit tests for extension buildWsUrl normalization.
  *
  * Runs under `node --test` (Node 18+). The function is copy-pasted from
- * extensions/chrome/background/service_worker.js — this is the same
+ * nexus-agent-chrome/background/service_worker.js — this is the same
  * reference-test pattern used by test_protocol_version.js.
  *
  * Added in response to Wave C quality review (P1-1 URL path mismatch +
@@ -12,7 +12,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Keep this in sync with extensions/chrome/background/service_worker.js
+// Keep this in sync with nexus-agent-chrome/background/service_worker.js
 function buildWsUrl(serverUrl, token) {
   let base = serverUrl.replace(/\/+$/, '');
   base = base.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
