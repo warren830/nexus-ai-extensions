@@ -1,0 +1,17 @@
+{
+  "name": "nexus-agent-chrome",
+  "version": "0.1.0",
+  "description": "Chrome extension for Nexus-AI browser agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "node --test ../tests/unit/extension/test_badge_manager.js ../tests/unit/extension/test_session_manager.js ../tests/unit/extension/test_protocol_version.js ../tests/unit/extension/test_build_ws_url.js ../tests/unit/extension/test_content_helpers.js ../tests/unit/extension/test_token_normalization.js",
+    "lint": "echo 'no linter configured yet'"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Nexus-AI contributors",
+  "license": "MIT"
+}

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nexus Agent — Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="nav">
+        <div class="brand">
+          <span class="brand-logo">🤖</span>
+          <span class="brand-text">Nexus Agent</span>
+        </div>
+        <nav>
+          <button class="nav-item is-active" data-target="pane-connection">Connection</button>
+          <button class="nav-item" data-target="pane-sessions">Active Sessions</button>
+          <button class="nav-item" data-target="pane-shortcuts">Keyboard Shortcuts</button>
+          <button class="nav-item" data-target="pane-about">About</button>
+        </nav>
+      </aside>
+
+      <main class="panes">
+        <section id="pane-connection" class="pane is-active">
+          <h1>Connection</h1>
+          <p class="desc">
+            Configure the Nexus server URL and paste a browser extension token
+            generated from the Nexus Web UI. The extension will connect
+            automatically and the toolbar icon will turn green.
+          </p>
+
+          <label class="field">
+            <span>Server URL</span>
+            <input
+              type="text"
+              id="server-url"
+              placeholder="wss://nexus.example.com"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <small class="hint">Accepts <code>wss://</code> or <code>https://</code>; will be normalized.</small>
+          </label>
+
+          <label class="field">
+            <span>Token</span>
+            <input
+              type="password"
+              id="token"
+              placeholder="paste token here"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <small class="hint" id="token-hint">
+              Generated in Nexus Web UI → Settings → Browser Extension.
+            </small>
+            <div id="token-status" class="status hidden"></div>
+          </label>
+
+          <label class="field">
+            <span>User ID</span>
+            <input
+              type="text"
+              id="user-id"
+              placeholder="your Nexus user id (required for handshake)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <small class="hint">
+              The extension sends this as the <code>user_id</code> in the
+              handshake and the server rejects if it does not match the token.
+            </small>
+          </label>
+
+          <div class="actions">
+            <button id="save-btn" class="btn btn-primary">Save &amp; reconnect</button>
+            <button id="test-btn" class="btn btn-secondary">Test connection</button>
+          </div>
+
+          <div id="connection-status" class="conn-status"></div>
+        </section>
+
+        <section id="pane-sessions" class="pane">
+          <h1>Active Sessions</h1>
+          <p class="desc">
+            Agent Tabs currently associated with this extension. Close or
+            revoke authorization for any session that should no longer be
+            controlled by an agent.
+          </p>
+          <div id="sessions-list" class="sessions-list">
+            <div class="muted">Loading…</div>
+          </div>
+          <button id="refresh-sessions" class="btn btn-secondary">Refresh</button>
+        </section>
+
+        <section id="pane-shortcuts" class="pane">
+          <h1>Keyboard Shortcuts</h1>
+          <p class="desc">Global shortcut for pausing all running agents.</p>
+          <table class="shortcut-table">
+            <tbody>
+              <tr>
+                <td><code>Alt+Shift+P</code></td>
+                <td>Pause all running Nexus agents</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="desc">
+            To customize, open
+            <a href="#" id="open-chrome-shortcuts">chrome://extensions/shortcuts</a>.
+          </p>
+        </section>
+
+        <section id="pane-about" class="pane">
+          <h1>About</h1>
+          <dl class="kv">
+            <dt>Extension version</dt>
+            <dd id="about-version">…</dd>
+            <dt>Protocol version</dt>
+            <dd id="about-protocol">…</dd>
+            <dt>Source</dt>
+            <dd><a href="https://github.com/aws-samples/Nexus-AI" target="_blank" rel="noopener">GitHub</a></dd>
+          </dl>
+        </section>
+      </main>
+    </div>
+
+    <script src="options.js" type="module"></script>
+  </body>
+</html>

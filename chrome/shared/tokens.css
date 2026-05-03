@@ -1,0 +1,15 @@
+/* shared/tokens.css
+ *
+ * Placeholder for design tokens shared with Nexus Web UI (spec R18).
+ *
+ * In Phase 1.5 we will sync variables from web/src/app/globals.css
+ * (Tailwind theme export) so the extension matches the main app.
+ *
+ * MVP scope: options.css currently inlines its own palette; that's fine
+ * for Phase 1. When this file is populated it will override them with
+ * canonical tokens via `@import "../shared/tokens.css"` at the top of
+ * options.css.
+ */
+:root {
+  /* intentionally empty — filled by CI sync in Phase 1.5 */
+}

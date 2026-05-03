@@ -1,0 +1,139 @@
+// background/badge_manager.js
+//
+// Toolbar icon state machine (spec §5 Toolbar Icon 状态机).
+//
+// Five states:
+//   OFFLINE     — grey; token not configured / WSS dropped > 30s
+//   CONNECTING  — yellow, blinks every 500ms (R19); during handshake / backoff
+//   IDLE        — green; WSS up, no active sessions
+//   ACTIVE      — purple + N badge; N active sessions
+//   ALERT       — red + `!`; token expired / protocol mismatch / offline cmd
+//
+// This module is a thin wrapper around chrome.action.*; the logic is pure
+// so we can unit-test `computeBadgeConfig()` without a real chrome runtime.
+
+export const STATES = Object.freeze({
+  OFFLINE: 'OFFLINE',
+  CONNECTING: 'CONNECTING',
+  IDLE: 'IDLE',
+  ACTIVE: 'ACTIVE',
+  ALERT: 'ALERT',
+});
+
+/**
+ * Pure function: given a state + optional context (sessionCount, version,
+ * alertReason), return the icon filename prefix, badge text, badge color,
+ * and tooltip text.
+ *
+ * @param {string} state   — one of STATES
+ * @param {object} ctx     — { sessionCount, version, alertReason, multiDevice }
+ * @returns {object}       — { iconPrefix, badgeText, badgeColor, title }
+ */
+export function computeBadgeConfig(state, ctx = {}) {
+  const version = ctx.version || '0.1.0';
+  const sessionCount = Math.max(0, Math.min(9, ctx.sessionCount || 0));
+  const alertReason = ctx.alertReason || '';
+
+  switch (state) {
+    case STATES.OFFLINE:
+      return {
+        iconPrefix: 'icon-offline',
+        badgeText: '',
+        badgeColor: '#888888',
+        title: 'Nexus Agent: offline. Open options to configure.',
+      };
+    case STATES.CONNECTING:
+      return {
+        iconPrefix: 'icon-connecting',
+        badgeText: '',
+        badgeColor: '#f5a623',
+        title: 'Nexus Agent: connecting…',
+      };
+    case STATES.IDLE:
+      return {
+        iconPrefix: 'icon-idle',
+        badgeText: '',
+        badgeColor: '#22c55e',
+        title: `Nexus Agent: connected (v${version})`,
+      };
+    case STATES.ACTIVE: {
+      const badge = sessionCount > 0 ? String(sessionCount) : '';
+      return {
+        iconPrefix: 'icon-active',
+        badgeText: badge,
+        badgeColor: '#a855f7',
+        title: `Nexus Agent: ${sessionCount} session${sessionCount === 1 ? '' : 's'} running`,
+      };
+    }
+    case STATES.ALERT:
+      return {
+        iconPrefix: 'icon-alert',
+        badgeText: '!',
+        badgeColor: '#ef4444',
+        title: `Nexus Agent: ${alertReason || 'alert — click to reauthorize'}`,
+      };
+    default:
+      return computeBadgeConfig(STATES.OFFLINE, ctx);
+  }
+}
+
+let _blinkTimer = null;
+let _blinkOn = true;
+
+function _stopBlink() {
+  if (_blinkTimer) {
+    clearInterval(_blinkTimer);
+    _blinkTimer = null;
+    _blinkOn = true;
+  }
+}
+
+function _applyIcon(iconPrefix, dim = false) {
+  // Map prefix → sized icon files. Dim variant used for connecting blink.
+  const suffix = dim ? '-dim' : '';
+  const paths = {
+    16: `icons/${iconPrefix}${suffix}-16.png`,
+    48: `icons/${iconPrefix}${suffix}-48.png`,
+    128: `icons/${iconPrefix}${suffix}-128.png`,
+  };
+  try {
+    // Fall back to non-dim file if dim variant missing (MVP ships minimal icons).
+    chrome.action.setIcon({ path: dim ? {
+      16: `icons/${iconPrefix}-16.png`,
+      48: `icons/${iconPrefix}-48.png`,
+      128: `icons/${iconPrefix}-128.png`,
+    } : paths });
+  } catch (e) {
+    // chrome.action.setIcon can fail transiently during SW restart; swallow.
+  }
+}
+
+/**
+ * Apply the given state to the toolbar icon. Handles blinking for CONNECTING.
+ *
+ * @param {string} state   — one of STATES
+ * @param {object} ctx     — { sessionCount, version, alertReason, multiDevice }
+ */
+export function setState(state, ctx = {}) {
+  _stopBlink();
+  const cfg = computeBadgeConfig(state, ctx);
+
+  _applyIcon(cfg.iconPrefix, false);
+  try {
+    chrome.action.setBadgeText({ text: cfg.badgeText });
+    chrome.action.setBadgeBackgroundColor({ color: cfg.badgeColor });
+    chrome.action.setTitle({ title: cfg.title });
+  } catch (e) {
+    // SW may be transient; swallow.
+  }
+
+  if (state === STATES.CONNECTING) {
+    // Blink: alternate dim / bright every 500ms (R19).
+    _blinkTimer = setInterval(() => {
+      _blinkOn = !_blinkOn;
+      _applyIcon(cfg.iconPrefix, !_blinkOn);
+    }, 500);
+  }
+}
+
+export default { STATES, computeBadgeConfig, setState };
