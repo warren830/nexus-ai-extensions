@@ -315,8 +315,14 @@ def test_wait_for_human_reply_mode():
     assert result == {"ok": True, "reply": "go ahead"}
 
 
-def test_wait_for_human_interactive_raises_not_implemented():
-    """takeover_mode='interactive' -> NotImplementedError, no dispatch."""
+def test_wait_for_human_interactive_returns_structured_error():
+    """takeover_mode='interactive' -> structured tool error, no dispatch.
+
+    R6 (no silent downgrade) is preserved but surfaced as a dict result
+    instead of a raised exception — Strands would otherwise turn the
+    raised exception into a raw agent-visible traceback, which is the
+    wrong failure shape for a tool-call loop.
+    """
     from nexus_utils.browser.adapter import BrowserBridgeAdapter
 
     adapter = BrowserBridgeAdapter(
@@ -329,21 +335,24 @@ def test_wait_for_human_interactive_raises_not_implemented():
         "nexus_utils.browser.adapter.dispatch_browser_command",
         new=mock_dispatch,
     ):
-        with pytest.raises(NotImplementedError) as excinfo:
-            _run(
-                adapter.wait_for_human(
-                    reason="approve action",
-                    takeover_mode="interactive",
-                )
+        result = _run(
+            adapter.wait_for_human(
+                reason="approve action",
+                takeover_mode="interactive",
             )
+        )
 
     # Dispatch must NOT have been called (no silent downgrade).
     assert mock_dispatch.await_count == 0
 
-    msg = str(excinfo.value).lower()
-    assert "interactive" in msg
-    # R6: "future" or literal rule tag "r6" should be surfaced.
-    assert ("future" in msg) or ("r6" in msg)
+    # Structured error shape — agent sees a normal tool failure.
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_takeover_mode"
+    assert result["requested_mode"] == "interactive"
+    assert "reply" in result["supported_modes"]
+    # R6: detail should mention "future" or "r6" for observability.
+    detail = result.get("detail", "").lower()
+    assert ("future" in detail) or ("r6" in detail)
 
 
 def test_wait_for_human_uses_extended_dispatch_timeout():
