@@ -202,6 +202,21 @@ async function connect() {
       await refreshBadge();
       return;
     }
+    // 4006 = device_revoked — server revoked this device. User must
+    // re-run Connect Extension from Web UI. Strip the now-useless token
+    // + device_id from storage; leave server_url as a hint so the next
+    // Connect flow doesn't bother reasking. Stop reconnect loop.
+    if (ev.code === 4006) {
+      _alertReason = ev.reason || 'Device revoked. Please reconnect from Web UI.';
+      try {
+        await chrome.storage.local.remove(['token', 'device_id']);
+      } catch (e) {
+        console.warn('[close-4006] storage.local.remove failed:', e);
+      }
+      notifyDeviceRevoked(ev.reason || '');
+      await refreshBadge();
+      return;
+    }
 
     await refreshBadge();
     if (wasOpen || _connectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -739,6 +754,24 @@ function notifyTokenProblem() {
       title: 'Nexus Agent: authorization failed',
       message: 'Token invalid or expired. Please generate a new one in Nexus Web UI.',
       buttons: [{ title: 'Open options' }],
+      priority: 2,
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function notifyDeviceRevoked(serverReason = '') {
+  // Distinct ID so the existing nexus-token-problem notification (for
+  // 4001/4003) isn't overwritten — the causes are different (this one
+  // the user likely initiated themselves from another browser).
+  try {
+    const suffix = serverReason ? ` — ${serverReason}` : '';
+    chrome.notifications.create('nexus-device-revoked', {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon-alert-128.png'),
+      title: 'Nexus Agent: device revoked',
+      message:
+        'This device was revoked from the Nexus Web UI. Visit Settings → ' +
+        'Browser Extension and click Connect to re-authorize.' + suffix,
       priority: 2,
     });
   } catch (e) { /* ignore */ }
