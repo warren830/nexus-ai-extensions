@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Nexus Agent</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <img src="../icons/icon-48.png" alt="" class="logo" />
+      <div class="title">
+        <div class="brand">Nexus Agent</div>
+        <div class="version" id="version">—</div>
+      </div>
+    </header>
+
+    <section class="status">
+      <span id="status-dot" class="dot dot-unknown"></span>
+      <span id="status-label" class="status-label">Checking…</span>
+    </section>
+
+    <!-- Shown when connected; hidden otherwise. See popup.js render(). -->
+    <section class="meta" id="meta-block" hidden>
+      <div class="row">
+        <span class="label">Device</span>
+        <button id="device-id" class="device-id-btn" title="Click to copy"
+          >dev-…</button
+        >
+      </div>
+      <div class="row">
+        <span class="label">Server</span>
+        <span id="server-url" class="value">—</span>
+      </div>
+    </section>
+
+    <!-- Shown when NOT connected — nudges user to Web UI Connect flow. -->
+    <section class="onboard" id="onboard-block" hidden>
+      <p class="onboard-text">
+        No token yet. Open the Nexus Web UI and click
+        <strong>Connect Browser Extension</strong> on the Settings page.
+      </p>
+    </section>
+
+    <footer class="actions">
+      <button id="btn-settings" class="btn btn-primary">Open Settings</button>
+      <button id="btn-disconnect" class="btn btn-ghost" hidden>
+        Disconnect
+      </button>
+    </footer>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

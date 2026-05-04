@@ -88,24 +88,78 @@ function _stopBlink() {
   }
 }
 
-function _applyIcon(iconPrefix, dim = false) {
-  // Map prefix → sized icon files. Dim variant used for connecting blink.
-  const suffix = dim ? '-dim' : '';
-  const paths = {
-    16: `icons/${iconPrefix}${suffix}-16.png`,
-    48: `icons/${iconPrefix}${suffix}-48.png`,
-    128: `icons/${iconPrefix}${suffix}-128.png`,
-  };
-  try {
-    // Fall back to non-dim file if dim variant missing (MVP ships minimal icons).
-    chrome.action.setIcon({ path: dim ? {
-      16: `icons/${iconPrefix}-16.png`,
-      48: `icons/${iconPrefix}-48.png`,
-      128: `icons/${iconPrefix}-128.png`,
-    } : paths });
-  } catch (e) {
-    // chrome.action.setIcon can fail transiently during SW restart; swallow.
+// Wave 4: chrome.action.setIcon({path}) silently fails inside MV3
+// service workers on some Chromium builds — the internal PNG fetch
+// path relies on the DOM's Image element, which SWs don't have.
+// Working around by pre-fetching each PNG once, converting to
+// ImageData via OffscreenCanvas, and caching the result. Subsequent
+// setIcon calls use the cached ImageData and succeed reliably.
+//
+// Shape: _iconCache[iconPrefix] = { 16: ImageData, 48: ImageData,
+//                                    128: ImageData }
+const _iconCache = Object.create(null);
+let _iconPreloadPromise = null;
+
+async function _loadIconImageData(size, iconPrefix) {
+  const url = chrome.runtime.getURL(`icons/${iconPrefix}-${size}.png`);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`icon fetch ${url} -> ${resp.status}`);
+  const blob = await resp.blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, size, size);
+  return ctx.getImageData(0, 0, size, size);
+}
+
+async function _preloadIcons(prefixes) {
+  // Called lazily on the first setState. Cache survives SW restart
+  // because the module reloads, but we only pay the cost once per SW
+  // lifetime (a few dozen KB of fetches).
+  await Promise.all(
+    prefixes.flatMap((prefix) =>
+      [16, 48, 128].map(async (size) => {
+        try {
+          _iconCache[prefix] = _iconCache[prefix] || {};
+          _iconCache[prefix][size] = await _loadIconImageData(size, prefix);
+        } catch (e) {
+          console.warn(
+            `[badge] icon preload failed for ${prefix}-${size}:`, e,
+          );
+        }
+      }),
+    ),
+  );
+}
+
+function _applyIcon(iconPrefix, _dim = false) {
+  // We no longer implement a dim variant; the blink timer toggles
+  // setBadgeText instead (see _startBlink). Simpler + fewer PNGs.
+  const cached = _iconCache[iconPrefix];
+  if (!cached || !cached['16'] || !cached['48'] || !cached['128']) {
+    // First time this prefix is needed — kick off async load and
+    // retry after it settles. Swallow errors so a broken PNG doesn't
+    // break the state machine.
+    if (!_iconPreloadPromise) {
+      _iconPreloadPromise = _preloadIcons([
+        'icon', 'icon-active', 'icon-alert',
+        'icon-connecting', 'icon-idle', 'icon-offline',
+      ]).finally(() => {
+        _iconPreloadPromise = null;
+      });
+    }
+    _iconPreloadPromise.then(() => {
+      const ready = _iconCache[iconPrefix];
+      if (ready?.['16'] && ready?.['48'] && ready?.['128']) {
+        chrome.action.setIcon({ imageData: ready }).catch(() => {});
+      }
+    });
+    return;
   }
+  chrome.action.setIcon({ imageData: cached }).catch((e) => {
+    // Still log — if this fires after preload succeeded, something else is wrong.
+    console.warn(`[badge] setIcon(${iconPrefix}) failed:`, e);
+  });
 }
 
 /**
@@ -128,10 +182,17 @@ export function setState(state, ctx = {}) {
   }
 
   if (state === STATES.CONNECTING) {
-    // Blink: alternate dim / bright every 500ms (R19).
+    // Blink the badge text to signal "working" — icon swap alone loses
+    // the animation since Wave 4 retired dim-variant PNGs (ImageData
+    // cache is per-state, not per-brightness). Text toggle is light
+    // weight and gives the user feedback during brief reconnect loops.
     _blinkTimer = setInterval(() => {
       _blinkOn = !_blinkOn;
-      _applyIcon(cfg.iconPrefix, !_blinkOn);
+      try {
+        chrome.action.setBadgeText({ text: _blinkOn ? cfg.badgeText : '' });
+      } catch {
+        /* SW transient */
+      }
     }, 500);
   }
 }

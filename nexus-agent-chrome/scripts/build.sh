@@ -16,6 +16,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHROME_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$CHROME_DIR"
 
+# Wave 4: regenerate manifest.json from Nexus's default_config.yaml so
+# the distributed extension uses the operator's chosen externally_
+# connectable.matches allowlist, not the source-controlled dev defaults.
+# If PyYAML is missing, gen_manifest.py prints a warning and exits 0 —
+# the build falls back to the source manifest (pre-Wave-4 behavior).
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$SCRIPT_DIR/gen_manifest.py"
+else
+  echo "python3 not found; building with source manifest as-is." >&2
+fi
+
 # Extract version from manifest.json (simple grep, no jq dependency).
 VERSION=$(grep -oE '"version"\s*:\s*"[^"]+"' manifest.json | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
 if [ -z "$VERSION" ]; then
@@ -36,6 +47,7 @@ FILES=(
   background
   content
   options
+  popup
   icons
   shared
 )

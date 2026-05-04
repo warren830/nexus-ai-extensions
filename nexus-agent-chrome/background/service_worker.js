@@ -23,8 +23,20 @@ import sessionMgr from './session_manager.js';
 const PROTOCOL_VERSION = '1.1';
 const EXTENSION_VERSION = '0.1.0';
 const MAX_AGENT_TABS = 5;
-const MAX_RECONNECT_ATTEMPTS = 5;
-const BACKOFF_CAP_MS = 30000;
+// Wave 4: removed MAX_RECONNECT_ATTEMPTS give-up behavior. Production
+// Bridge restarts (deploys, OS updates) can take 1-5 min, which is
+// longer than the old 1+2+4+8+16=31 s ceiling. With the old ceiling
+// the extension went permanently offline until the user manually
+// reloaded it — a poor UX for a background service. We now retry
+// indefinitely, capped at a generous 60 s between attempts so the
+// extension is ready the moment Bridge comes back up without wasting
+// CPU during long outages.
+//
+// Terminal close codes (4001/4003 invalid-token, 4004 proto-mismatch,
+// 4006 device-revoked) still short-circuit the reconnect loop — those
+// represent states only the user can resolve, not transient network
+// blips.
+const BACKOFF_CAP_MS = 60000;
 const KEEPALIVE_ALARM = 'keepalive';
 const KEEPALIVE_PERIOD_MIN = 0.4;      // ~24 s
 // Wave 2: automatic token refresh.
@@ -219,12 +231,10 @@ async function connect() {
     }
 
     await refreshBadge();
-    if (wasOpen || _connectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      scheduleReconnect();
-    } else {
-      _alertReason = 'Unable to reach Nexus server after multiple attempts.';
-      await refreshBadge();
-    }
+    // Wave 4: unbounded retries. We never "give up" on network blips —
+    // a terminal close (4001/4003/4004/4006) is the only way out, and
+    // those have their own early-returns above.
+    scheduleReconnect();
   });
 
   _ws.addEventListener('error', () => {
@@ -234,7 +244,6 @@ async function connect() {
 
 function scheduleReconnect() {
   _connectAttempts += 1;
-  if (_connectAttempts > MAX_RECONNECT_ATTEMPTS) return;
   const delay = Math.min(_nextBackoffMs, BACKOFF_CAP_MS);
   _nextBackoffMs = Math.min(_nextBackoffMs * 2, BACKOFF_CAP_MS);
   setTimeout(() => {
@@ -804,11 +813,46 @@ function _ensureAlarms() {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_POLL_PERIOD_MIN });
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   await refreshBadge();
   await sessionMgr.reconcileTabs();
   _ensureAlarms();
   connect().catch(() => {});
+
+  // Wave 4 onboarding: on first install (not reload / update), open
+  // the Web UI Settings → Browser Extension page so the user lands on
+  // the one-click Connect flow.
+  //
+  // This only fires when BOTH conditions hold:
+  //   1. details.reason === 'install' (first install, not update/reload)
+  //   2. NEXUS_WEB_UI_URL is defined at build time via gen_manifest.py
+  //      (i.e. an operator configured `aws.browser_agent.web_ui_url`)
+  //
+  // Dev-mode unpacked loads — common in E2E tests and local iteration —
+  // don't have NEXUS_WEB_UI_URL injected, so no tab auto-opens. This
+  // keeps test environments deterministic and matches the principle
+  // that we should do nothing until we're confident we'll do it right.
+  if (details?.reason !== 'install') return;
+  let webUiUrl = null;
+  try {
+    if (typeof NEXUS_WEB_UI_URL !== 'undefined' && NEXUS_WEB_UI_URL) {
+      webUiUrl = String(NEXUS_WEB_UI_URL).replace(/\/+$/, '');
+    }
+  } catch { /* constant not baked in — dev mode */ }
+  if (!webUiUrl) return;
+  try {
+    const { token } = await chrome.storage.local.get(['token']);
+    if (token) return; // reinstall of an already-provisioned extension
+  } catch {
+    /* treat unreadable storage as no token */
+  }
+  try {
+    await chrome.tabs.create({
+      url: `${webUiUrl}/settings/browser-extension`,
+    });
+  } catch (e) {
+    console.warn('[onInstalled] failed to open onboarding page:', e);
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -987,6 +1031,35 @@ chrome.action.onClicked.addListener(async () => {
 // Accept messages from options page (config update, revoke, etc.)
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return false;
+
+  // Wave 4 — popup.status: lightweight liveness ping for the toolbar
+  // popup. Returns the current WS state machine bucket so popup.js can
+  // render the right color + label without hitting storage semantics.
+  if (msg.type === 'popup.status') {
+    const map = {
+      open: { state: 'active', label: 'Connected' },
+      connecting: { state: 'connecting', label: 'Connecting…' },
+      disconnected: { state: 'offline', label: 'Offline' },
+    };
+    const mapped = map[_wsState] || { state: 'unknown', label: _wsState };
+    if (_alertReason) {
+      sendResponse({ state: 'alert', label: _alertReason });
+    } else {
+      sendResponse(mapped);
+    }
+    return false;
+  }
+
+  // Wave 4 — popup.disconnect: user clicked Disconnect in the popup.
+  // The popup already wiped chrome.storage.local; we just need to
+  // close the WS and not re-schedule. scheduleReconnect() will bail
+  // cleanly because connect() reads storage and finds no token.
+  if (msg.type === 'popup.disconnect') {
+    _alertReason = '';
+    try { _ws?.close(1000, 'user_disconnect'); } catch (_) { /* ignore */ }
+    sendResponse({ ok: true });
+    return false;
+  }
 
   if (msg.command === 'reconnect') {
     resetBackoff();
