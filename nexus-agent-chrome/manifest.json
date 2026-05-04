@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nexus Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lets Nexus-AI agents operate your browser on your behalf.",
   "permissions": [
     "tabs",
@@ -13,6 +13,13 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:3000/*",
+      "http://localhost:*/*",
+      "https://*.yingchu.cloud/*"
+    ]
+  },
   "background": {
     "service_worker": "background/service_worker.js",
     "type": "module"

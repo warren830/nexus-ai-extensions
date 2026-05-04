@@ -17,7 +17,10 @@
 import { STATES, setState as setBadgeState } from './badge_manager.js';
 import sessionMgr from './session_manager.js';
 
-const PROTOCOL_VERSION = '1.0';
+// 1.1: adds optional `device_id` to extension.online frame
+//      + Web UI externally_connectable path (nexus.setup / nexus.ping /
+//        nexus.refresh). MINOR bump — server still accepts 1.0 clients.
+const PROTOCOL_VERSION = '1.1';
 const EXTENSION_VERSION = '0.1.0';
 const MAX_AGENT_TABS = 5;
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -44,11 +47,14 @@ const _notifPending = new Map();        // notification_id → { sessionId, requ
  * ------------------------------------------------------------------ */
 
 async function loadConfig() {
-  const result = await chrome.storage.local.get(['server_url', 'token', 'user_id']);
+  const result = await chrome.storage.local.get([
+    'server_url', 'token', 'user_id', 'device_id',
+  ]);
   return {
     serverUrl: (result.server_url || '').trim(),
     token: (result.token || '').trim(),
     userId: (result.user_id || '').trim(),
+    deviceId: (result.device_id || '').trim() || null,
   };
 }
 
@@ -102,7 +108,7 @@ async function connect() {
   // Guard: idempotent — if already connecting/open, bail out.
   if (_wsState === 'open' || _wsState === 'connecting') return;
 
-  const { serverUrl, token, userId } = await loadConfig();
+  const { serverUrl, token, userId, deviceId } = await loadConfig();
   if (!serverUrl || !token || !userId) {
     _wsState = 'disconnected';
     if (!userId && (serverUrl || token)) {
@@ -142,6 +148,13 @@ async function connect() {
     protocol_version: PROTOCOL_VERSION,
     chrome_version: (navigator?.userAgent?.match(/Chrome\/(\S+)/) || [, ''])[1] || '',
   };
+  // device_id (product-UX) is optional — only present when this
+  // extension was set up via the Web UI "Connect" flow. Legacy manual
+  // paste setup leaves it null, and Bridge falls back to user-only
+  // routing per the compat matrix (design §14c).
+  if (deviceId) {
+    helloPayload.device_id = deviceId;
+  }
 
   _ws.addEventListener('open', () => {
     try {
@@ -891,3 +904,151 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   return false;
 });
+
+/* ────────────────────────────────────────────────────────────
+ * External messages — Web UI → extension (product-UX rework).
+ * ────────────────────────────────────────────────────────────
+ * When the user clicks "Connect Extension" in the Nexus Web UI,
+ * the page sends us a `nexus.setup` message with a fresh token,
+ * user_id, server_url, and device_id. We persist + reconnect.
+ *
+ * Chrome gates externally_connectable to the domains in manifest.json
+ * (see `externally_connectable.matches`). Even so we double-check
+ * sender.origin / sender.url to block cousin-tab attacks from scripts
+ * running on whitelisted origins but under a different iframe chain.
+ * ──────────────────────────────────────────────────────────── */
+
+const ALLOWED_EXTERNAL_ORIGIN_RE = /^https?:\/\/(localhost(:\d+)?|.*\.yingchu\.cloud)(\/|$)/i;
+
+function _isExternalSenderAllowed(sender) {
+  const origin = sender?.origin || (sender?.url ? new URL(sender.url).origin : '');
+  if (!origin) return false;
+  return ALLOWED_EXTERNAL_ORIGIN_RE.test(origin);
+}
+
+chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== 'object') {
+    sendResponse({ ok: false, error: 'bad_message' });
+    return true;
+  }
+  if (!_isExternalSenderAllowed(sender)) {
+    console.warn('[Nexus] external msg from unallowed origin:', sender?.origin);
+    sendResponse({ ok: false, error: 'origin_not_allowed' });
+    return true;
+  }
+
+  const type = msg.type || '';
+
+  if (type === 'nexus.ping') {
+    // Web UI uses this to discover whether the extension is installed.
+    sendResponse({
+      type: 'nexus.pong',
+      version: chrome.runtime.getManifest().version,
+      protocol_version: PROTOCOL_VERSION,
+    });
+    return true;
+  }
+
+  if (type === 'nexus.setup') {
+    const { token, user_id, server_url, device_id } = msg;
+    if (!token || !user_id || !server_url) {
+      sendResponse({ ok: false, error: 'missing_fields' });
+      return true;
+    }
+    (async () => {
+      try {
+        await chrome.storage.local.set({
+          token,
+          user_id,
+          server_url,
+          device_id: device_id || null,
+        });
+        // Kick off reconnect now.
+        resetBackoff();
+        try { _ws?.close(); } catch (_) { /* ignore */ }
+        await connect();
+        sendResponse({ ok: true, device_id: device_id || null });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+    })();
+    return true;
+  }
+
+  if (type === 'nexus.refresh') {
+    // Web UI can trigger refresh on demand (e.g. user clicks a
+    // "Refresh now" button). The automatic heartbeat path (Wave 2)
+    // will call the same helper without going through Web UI.
+    (async () => {
+      const result = await refreshTokenNow();
+      sendResponse(result);
+    })();
+    return true;
+  }
+
+  sendResponse({ ok: false, error: 'unknown_type' });
+  return true;
+});
+
+/**
+ * Fetch a fresh token from the backend using the current token as
+ * credential. On success, replace chrome.storage.local.token and
+ * nudge the WS so the next reconnect picks up the new auth.
+ */
+async function refreshTokenNow() {
+  const { token, server_url } = await chrome.storage.local.get(['token', 'server_url']);
+  if (!token || !server_url) {
+    return { ok: false, error: 'no_token_to_refresh' };
+  }
+  // server_url is wss://host:port — derive http(s)://host:port for the
+  // refresh REST endpoint. Bridge exposes /bridge/browser/_ipc/* so
+  // refresh lives on the same host root (NOT the Bridge itself — the
+  // refresh endpoint is on the API service). We rely on setup having
+  // passed a usable wss:// origin; the HTTP schema is a simple swap.
+  let apiBase;
+  try {
+    const u = new URL(server_url.replace(/^wss?:/, (s) =>
+      s === 'wss:' ? 'https:' : 'http:'
+    ));
+    // API typically runs on a different port than Bridge in dev
+    // (API 8000 vs Bridge 8001). For now assume the same host; in
+    // production both sit behind the same load balancer. Wave 4 will
+    // make this explicit via a separate api_url field from the
+    // `nexus.setup` payload.
+    u.pathname = '';
+    u.search = '';
+    // Dev: swap port 8001 → 8000. Prod: behind LB on same port.
+    if (u.port === '8001') u.port = '8000';
+    apiBase = u.origin;
+  } catch (e) {
+    return { ok: false, error: 'bad_server_url', detail: String(e?.message || e) };
+  }
+
+  try {
+    const res = await fetch(`${apiBase}/api/v2/browser/token/refresh`, {
+      method: 'POST',
+      headers: {
+        'authorization': `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+    });
+    if (!res.ok) {
+      let body = null;
+      try { body = await res.json(); } catch (_) { /* ignore */ }
+      return {
+        ok: false,
+        error: 'refresh_http_error',
+        status: res.status,
+        detail: body?.detail || body || 'non-2xx',
+      };
+    }
+    const data = await res.json();
+    if (!data?.token) {
+      return { ok: false, error: 'refresh_no_token', body: data };
+    }
+    await chrome.storage.local.set({ token: data.token });
+    return { ok: true, ttl: data.ttl, expires_at: data.expires_at };
+  } catch (e) {
+    return { ok: false, error: 'refresh_network', detail: String(e?.message || e) };
+  }
+}
