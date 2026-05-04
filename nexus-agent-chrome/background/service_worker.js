@@ -27,6 +27,15 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const BACKOFF_CAP_MS = 30000;
 const KEEPALIVE_ALARM = 'keepalive';
 const KEEPALIVE_PERIOD_MIN = 0.4;      // ~24 s
+// Wave 2: automatic token refresh.
+// chrome.alarms fires every 30 min, we check whether the stored token is
+// within 1 h of expiry and, if so, call /token/refresh. The constant is
+// NOT the refresh cadence per se — it's the poll cadence for deciding
+// whether to refresh. Actual refresh happens at most once per token
+// lifetime (with the backend's 5-min rate limit as the floor).
+const REFRESH_ALARM = 'token-refresh';
+const REFRESH_POLL_PERIOD_MIN = 30;    // check every 30 min
+const REFRESH_THRESHOLD_SECONDS = 3600; // refresh when <1h to expiry
 const PENDING_REQUEST_TIMEOUT_MS = 30000;
 
 /* ------------------------------------------------------------------ *
@@ -751,17 +760,28 @@ function notifyMaxSessions() {
  * Chrome event listeners                                             *
  * ------------------------------------------------------------------ */
 
+/**
+ * Ensure both the keepalive alarm and the token-refresh alarm exist.
+ * Chrome will dedupe if they already exist (create is idempotent by
+ * name). Called from onInstalled / onStartup / module-top IIFE to
+ * cover all SW wake-up paths.
+ */
+function _ensureAlarms() {
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_PERIOD_MIN });
+  chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_POLL_PERIOD_MIN });
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   await refreshBadge();
   await sessionMgr.reconcileTabs();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_PERIOD_MIN });
+  _ensureAlarms();
   connect().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await refreshBadge();
   await sessionMgr.reconcileTabs();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_PERIOD_MIN });
+  _ensureAlarms();
   connect().catch(() => {});
 });
 
@@ -771,17 +791,79 @@ chrome.runtime.onStartup.addListener(async () => {
   try {
     await refreshBadge();
     await sessionMgr.reconcileTabs();
-    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_PERIOD_MIN });
+    _ensureAlarms();
     await connect();
   } catch (e) { /* ignore */ }
 })();
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (_wsState === 'open') {
-    sendToServer({ type: 'heartbeat' });
-  } else if (_wsState === 'disconnected') {
-    connect().catch(() => {});
+/**
+ * Decode a browser token's exp claim. Returns null if the token is
+ * malformed or unparseable (we then skip the refresh check — the WS
+ * layer will surface the error). Never throws.
+ *
+ * Token format is `base64url(json_payload + '.' + b64_sig)` double-
+ * encoded — see token_service._sign_payload. For exp we only need the
+ * outer decode to get at the embedded JSON body; signature doesn't
+ * matter here since we're just peeking, not verifying.
+ */
+function _parseTokenExp(token) {
+  try {
+    // `atob` doesn't handle URL-safe base64 directly.
+    const base64 = token.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4));
+    const decoded = atob(base64 + pad);
+    // Strip the `.<b64_sig>` tail: payload is json before first '.'
+    const jsonPart = decoded.split('.')[0];
+    const payload = JSON.parse(jsonPart);
+    return typeof payload?.exp === 'number' ? payload.exp : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) {
+    if (_wsState === 'open') {
+      sendToServer({ type: 'heartbeat' });
+    } else if (_wsState === 'disconnected') {
+      connect().catch(() => {});
+    }
+    return;
+  }
+
+  if (alarm.name === REFRESH_ALARM) {
+    // Wave 2: proactive token refresh. We only refresh when the stored
+    // token is in its last hour AND the extension has a device_id
+    // (legacy manual-paste tokens lack `did` — backend rejects
+    // refresh for those per design §6.2).
+    try {
+      const { token, device_id } = await chrome.storage.local.get(
+        ['token', 'device_id'],
+      );
+      if (!token || !device_id) return;
+      const exp = _parseTokenExp(token);
+      if (exp == null) return;
+      const secondsLeft = exp - Math.floor(Date.now() / 1000);
+      if (secondsLeft > REFRESH_THRESHOLD_SECONDS) return;
+      const result = await refreshTokenNow();
+      if (!result.ok) {
+        console.warn('[Nexus] auto-refresh failed:', result);
+        // Surface terminal failures (revoked / total TTL / legacy) so the
+        // user knows to reconnect. Transient HTTP errors silently retry
+        // on next alarm tick.
+        const reason = result.detail?.reason || result.error;
+        if (
+          reason === 'device_revoked' ||
+          reason === 'total_ttl_exceeded' ||
+          reason === 'legacy_token_no_device'
+        ) {
+          _alertReason = `Token refresh failed (${reason}). Please reconnect via Web UI.`;
+          await refreshBadge();
+        }
+      }
+    } catch (e) {
+      console.warn('[Nexus] alarm refresh handler threw:', e);
+    }
   }
 });
 
