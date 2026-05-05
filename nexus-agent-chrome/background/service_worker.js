@@ -512,6 +512,12 @@ async function handleBrowserAct(msg) {
       verb,
       value,
     });
+    // Wave 5 debug: surface the raw content-script response so operators
+    // can diff "what the extension said" vs "what the agent got back".
+    // If action_taken:none shows up here, we know it came from content;
+    // if it shows up in the agent UI but NOT here, the mismatch is in
+    // the server-side wrap. Stripping at any time is safe.
+    console.log('[browser.act] content result:', JSON.stringify(result));
     let newUrl = null;
     try {
       const t = await chrome.tabs.get(tabId);
