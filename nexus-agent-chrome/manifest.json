@@ -15,9 +15,10 @@
   ],
   "externally_connectable": {
     "matches": [
-      "http://localhost:3000/*",
       "http://localhost:*/*",
-      "https://*.yingchu.cloud/*"
+      "http://127.0.0.1:*/*",
+      "https://*.cloudfront.net/*",
+      "https://*.amazonaws.com/*"
     ]
   },
   "background": {
@@ -49,8 +50,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/*.png"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "icons/*.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

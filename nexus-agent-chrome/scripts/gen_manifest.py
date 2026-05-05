@@ -60,14 +60,25 @@ def load_config(path: Path) -> dict:
 def resolve_web_origins(cfg: dict) -> list[str]:
     """Pull ``browser_agent.web_origins`` out of the config. Defaults
     to the dev list if missing — same list that's hard-coded in a fresh
-    manifest.json so nothing changes for someone running on defaults."""
-    ba = (cfg.get("aws", {}) or {}).get("browser_agent", {}) or {}
+    manifest.json so nothing changes for someone running on defaults.
+
+    Config layout: ``default-config.browser_agent.web_origins``. The
+    legacy path ``aws.browser_agent`` is also accepted for older configs.
+    """
+    dc = cfg.get("default-config", {}) or {}
+    ba = (dc.get("browser_agent") or {}) or (
+        (cfg.get("aws", {}) or {}).get("browser_agent", {}) or {}
+    )
     origins = ba.get("web_origins")
     if not origins:
+        # Neutral defaults — cover local dev + AWS-hosted deployments.
+        # Operators self-hosting behind a custom domain override via
+        # default-config.browser_agent.web_origins in their config.
         return [
-            "http://localhost:3000/*",
             "http://localhost:*/*",
-            "https://*.yingchu.cloud/*",
+            "http://127.0.0.1:*/*",
+            "https://*.cloudfront.net/*",
+            "https://*.amazonaws.com/*",
         ]
     # Normalize: trim, drop empties, enforce strings.
     clean = [o.strip() for o in origins if isinstance(o, str) and o.strip()]
