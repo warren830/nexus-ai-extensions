@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nexus Agent",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Lets Nexus-AI agents operate your browser on your behalf.",
   "permissions": [
     "tabs",

@@ -503,6 +503,15 @@ async function handleBrowserAct(msg) {
 
   // Ask content script to execute the action.
   try {
+    // Capture the pre-click URL so we can detect a silent-no-op click
+    // (Turbo / React Router / Next Link swallow the synthetic click
+    // because event.isTrusted === false for programmatic dispatch).
+    let oldUrl = null;
+    try {
+      const t0 = await chrome.tabs.get(tabId);
+      oldUrl = t0.url || null;
+    } catch (_) { /* ignore */ }
+
     const result = await sendToContentScript(tabId, {
       action: 'act',
       instruction,
@@ -518,10 +527,47 @@ async function handleBrowserAct(msg) {
     // if it shows up in the agent UI but NOT here, the mismatch is in
     // the server-side wrap. Stripping at any time is safe.
     console.log('[browser.act] content result:', JSON.stringify(result));
+
+    // Wave 5.1: SPA-nav fallback. If content reported a successful click
+    // on an <a href>, wait a beat, check whether URL actually changed.
+    // If it didn't, call chrome.tabs.update(tabId, {url}) to force
+    // navigation — that routes through the browser navigation stack, not
+    // a synthetic click event, so frameworks see a real URL change and
+    // re-render accordingly.
+    //
+    // Only fires when all three are true:
+    //   1. content click succeeded (ok: true, action_taken: 'click')
+    //   2. content surfaced a click_href (element was an <a> or had one
+    //      as ancestor — rules out genuine button-without-nav clicks)
+    //   3. URL is still oldUrl after a short settle (click-driven
+    //      navigation would have flipped it within 300ms on most SPAs)
+    const wasClick = result?.ok && result?.action_taken === 'click';
+    const clickHref = result?.click_href;
+    let navFallbackFired = false;
+    if (wasClick && clickHref) {
+      await new Promise((r) => setTimeout(r, 300));
+      let afterClickUrl = null;
+      try {
+        const t1 = await chrome.tabs.get(tabId);
+        afterClickUrl = t1.url || null;
+      } catch (_) { /* ignore */ }
+      if (afterClickUrl === oldUrl) {
+        try {
+          await chrome.tabs.update(tabId, { url: clickHref });
+          navFallbackFired = true;
+          // Give the navigation a moment to commit so the reported
+          // new_url reflects the destination.
+          await new Promise((r) => setTimeout(r, 400));
+        } catch (e) {
+          console.warn('[browser.act] tabs.update fallback failed:', e);
+        }
+      }
+    }
+
     let newUrl = null;
     try {
-      const t = await chrome.tabs.get(tabId);
-      newUrl = t.url || null;
+      const t2 = await chrome.tabs.get(tabId);
+      newUrl = t2.url || null;
     } catch (e) { /* ignore */ }
     sendToServer({
       type: 'browser.result',
@@ -532,6 +578,10 @@ async function handleBrowserAct(msg) {
         action_taken: result?.action_taken || 'unknown',
         target: result?.target || '',
         new_url: newUrl,
+        // Let the agent/operator see when the fallback kicked in —
+        // useful for prompt tuning (e.g. "if nav_fallback_fired
+        // frequently, use browser_navigate directly for this site").
+        nav_fallback_fired: navFallbackFired,
       },
       ...(result?.ok ? {} : { error: result?.error || 'act_failed' }),
     });

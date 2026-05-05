@@ -274,12 +274,28 @@
       // wrapper-ref case still points at a real <a>/<button>.
       const clickTarget = liftToInteractive(el);
       dispatchClick(clickTarget);
+      // Wave 5.1: surface the target's href (if any) so SW can do a
+      // nav-fallback when the framework (Turbo / React Router / Next
+      // Link) silently swallows the synthetic click because it saw
+      // `isTrusted: false`. We walk up one more step from clickTarget
+      // itself to cover the case where clickTarget is e.g. a <span>
+      // child of the real <a>.
+      let clickHref = null;
+      try {
+        if (clickTarget?.tagName === 'A' && clickTarget.href) {
+          clickHref = clickTarget.href;
+        } else {
+          const anchor = clickTarget?.closest?.('a[href]');
+          if (anchor) clickHref = anchor.href;
+        }
+      } catch { /* ignore */ }
       return {
         ok: true,
         action_taken: 'click',
         ref,
         target: accessibleName(clickTarget),
         lifted: clickTarget !== el,
+        click_href: clickHref,
       };
     } catch (e) {
       return {
@@ -412,10 +428,22 @@
         };
       }
       dispatchClick(candidate.el);
+      // Wave 5.1: same click-href exposure as runActRef so the SW's
+      // SPA-nav fallback covers the legacy text-match path too.
+      let clickHref = null;
+      try {
+        if (candidate.el?.tagName === 'A' && candidate.el.href) {
+          clickHref = candidate.el.href;
+        } else {
+          const anchor = candidate.el?.closest?.('a[href]');
+          if (anchor) clickHref = anchor.href;
+        }
+      } catch { /* ignore */ }
       return {
         ok: true,
         action_taken: 'click',
         target: candidate.name,
+        click_href: clickHref,
       };
     } catch (e) {
       return {
