@@ -182,6 +182,116 @@
     return _refs.get(ref) || null;
   }
 
+  /* --- Wave 5: ref-based act path ------------------------------
+   *
+   * Old path: runAct(instruction) parses NL like "click the Submit
+   * button", does a full-DOM text match, and clicks the first hit.
+   * Falls over on wrapper-heavy SPAs (GitHub PR rows where the <a>
+   * is buried 4 layers deep inside <label><div><span>).
+   *
+   * New path: runActRef({ref, verb, value}) — agent passes the
+   * nexus_ref it already received in the observe AX tree. We look
+   * up the *exact* element and dispatch directly. No text match.
+   *
+   * `liftToInteractive(el)` walks up N levels looking for an <a>
+   * or [role=link] ancestor — for the case where observe snapshot
+   * happened to expose a wrapper (rare, but cheap insurance and
+   * it also fixes the adversarial case where observe re-registers
+   * the same wrapper element on multiple refs).
+   *
+   * Old path stays intact as a fallback when ref is missing or
+   * stale — see runAct() below.
+   * ------------------------------------------------------------ */
+
+  const CLICKABLE_ANCESTOR_TAGS = new Set(['A', 'BUTTON']);
+  const CLICKABLE_ANCESTOR_ROLES = new Set([
+    'link', 'button', 'menuitem', 'tab', 'option', 'checkbox', 'radio',
+  ]);
+  const MAX_LIFT_DEPTH = 4;
+
+  function liftToInteractive(el) {
+    // Walk up to MAX_LIFT_DEPTH parents looking for a real clickable
+    // ancestor. Return the original element if we don't find one.
+    if (!el) return null;
+    let cur = el;
+    for (let i = 0; i <= MAX_LIFT_DEPTH && cur; i++) {
+      if (CLICKABLE_ANCESTOR_TAGS.has(cur.tagName)) return cur;
+      const role = cur.getAttribute && cur.getAttribute('role');
+      if (role && CLICKABLE_ANCESTOR_ROLES.has(role)) return cur;
+      if (cur.hasAttribute && cur.hasAttribute('onclick')) return cur;
+      cur = cur.parentElement;
+    }
+    return el;
+  }
+
+  function runActRef(params) {
+    const { ref, verb, value } = params || {};
+    const el = resolveRef(ref);
+    if (!el) {
+      // Ref stale because page re-rendered between observe and act.
+      // Tell the agent specifically so it knows to re-observe rather
+      // than wasting another act on the same ref.
+      return {
+        ok: false,
+        error: 'ref_stale',
+        action_taken: 'none',
+        ref,
+        hint: 'Element no longer in DOM. Re-run browser_observe to get fresh refs.',
+      };
+    }
+    if (!document.contains(el)) {
+      return { ok: false, error: 'ref_stale', action_taken: 'none', ref };
+    }
+
+    // The matching verb is often "click" unless agent explicitly asks
+    // type / scroll. Default matches the old text-parse default.
+    const v = (verb || 'click').toLowerCase();
+
+    try {
+      if (v === 'type') {
+        const inputLike =
+          el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.isContentEditable;
+        // If ref is on a wrapper <div> and there's an input child,
+        // type into the child. Lift-down for type, lift-up for click.
+        const typeTarget = inputLike
+          ? el
+          : el.querySelector('input, textarea, [contenteditable]') || el;
+        dispatchType(typeTarget, value || '');
+        return {
+          ok: true,
+          action_taken: 'type',
+          ref,
+          target: accessibleName(typeTarget),
+        };
+      }
+      if (v === 'scroll') {
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+        return { ok: true, action_taken: 'scroll', ref };
+      }
+      // Default = click. Lift to nearest interactive ancestor so a
+      // wrapper-ref case still points at a real <a>/<button>.
+      const clickTarget = liftToInteractive(el);
+      dispatchClick(clickTarget);
+      return {
+        ok: true,
+        action_taken: 'click',
+        ref,
+        target: accessibleName(clickTarget),
+        lifted: clickTarget !== el,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: 'action_dispatch_failed',
+        action_taken: v,
+        ref,
+        detail: String(e?.message || e),
+      };
+    }
+  }
+
   /* --- act (naive matcher) --- */
 
   function parseInstruction(instruction) {
@@ -329,6 +439,18 @@
         return true;
       }
       if (msg.action === 'act') {
+        // Wave 5: prefer ref-based path when agent supplies nexus_ref
+        // from an earlier observe call. Fall through to legacy
+        // instruction parsing when ref is absent or stale.
+        if (msg.ref) {
+          const out = runActRef({
+            ref: msg.ref,
+            verb: msg.verb,
+            value: msg.value,
+          });
+          sendResponse(out);
+          return true;
+        }
         const out = runAct(msg.instruction || '');
         sendResponse(out);
         return true;

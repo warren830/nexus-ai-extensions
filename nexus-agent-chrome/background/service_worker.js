@@ -20,7 +20,12 @@ import sessionMgr from './session_manager.js';
 // 1.1: adds optional `device_id` to extension.online frame
 //      + Web UI externally_connectable path (nexus.setup / nexus.ping /
 //        nexus.refresh). MINOR bump — server still accepts 1.0 clients.
-const PROTOCOL_VERSION = '1.1';
+// 1.2: browser.act params extend with optional ref/verb/value for
+//      ref-based action dispatch. Old text-only params still work, so
+//      old servers pushing old messages to new extensions work, and
+//      new servers pushing new messages to old extensions get a silent
+//      fallback to text-match (unknown keys ignored by old content.js).
+const PROTOCOL_VERSION = '1.2';
 const EXTENSION_VERSION = '0.1.0';
 const MAX_AGENT_TABS = 5;
 // Wave 4: removed MAX_RECONNECT_ATTEMPTS give-up behavior. Production
@@ -434,7 +439,18 @@ async function injectContentScript(tabId) {
 
 async function handleBrowserAct(msg) {
   const { session_id, request_id, params = {} } = msg;
-  const { instruction, task_description, title_summary } = params;
+  // Wave 5: ref/verb/value optional — when present, content.js short-
+  // circuits the text-match path and clicks the exact element the
+  // agent got from observe. Old param shape (instruction only) still
+  // works for agents that haven't picked up the new prompt yet.
+  const {
+    instruction,
+    task_description,
+    title_summary,
+    ref,
+    verb,
+    value,
+  } = params;
 
   const tabId = await sessionMgr.getTabForSession(session_id);
   if (!tabId) {
@@ -490,6 +506,11 @@ async function handleBrowserAct(msg) {
     const result = await sendToContentScript(tabId, {
       action: 'act',
       instruction,
+      // Propagate Wave 5 fields when agent supplied them. content.js
+      // routes on msg.ref presence; undefined fields are fine.
+      ref,
+      verb,
+      value,
     });
     let newUrl = null;
     try {
