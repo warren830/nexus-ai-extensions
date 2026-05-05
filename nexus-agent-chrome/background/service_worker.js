@@ -1183,7 +1183,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  * running on whitelisted origins but under a different iframe chain.
  * ──────────────────────────────────────────────────────────── */
 
-const ALLOWED_EXTERNAL_ORIGIN_RE = /^https?:\/\/(localhost(:\d+)?|.*\.yingchu\.cloud)(\/|$)/i;
+// Must stay in sync with manifest.json externally_connectable.matches.
+// Chrome enforces the manifest list as the outer gate; this regex is a
+// defense-in-depth check to block cousin-tab attacks from scripts
+// running on a whitelisted origin but under a different iframe chain.
+// If you add/remove a domain here, mirror it in manifest.json too
+// (or regenerate manifest via scripts/gen_manifest.py).
+const ALLOWED_EXTERNAL_ORIGIN_RE = /^https?:\/\/(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[^/]+\.cloudfront\.net|[^/]+\.amazonaws\.com)(\/|$)/i;
 
 function _isExternalSenderAllowed(sender) {
   const origin = sender?.origin || (sender?.url ? new URL(sender.url).origin : '');
