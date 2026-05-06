@@ -351,13 +351,51 @@ async function handleBrowserNavigate(msg) {
 
   try {
     let tabId;
+    // Agent Tab Isolation (2026-05): each session gets its OWN Chrome
+    // window containing exactly one tab. This makes
+    // chrome.tabs.captureVisibleTab(windowId) reliable — without
+    // isolation, captureVisibleTab returns whatever tab the user has
+    // focused, which is usually the chat UI, not the page we just
+    // navigated to. See docs/deployment/PROD_RUNBOOK.md #1c.
     if (existing) {
-      await chrome.tabs.update(existing, { url, active: false });
-      tabId = existing;
-    } else {
-      const tab = await chrome.tabs.create({ url, active: false });
-      tabId = tab.id;
+      // Session already has a tab — check the tab (and its window)
+      // still exist before attempting to reuse. Users close things.
+      let tabStillAlive = false;
+      try {
+        await chrome.tabs.get(existing);
+        tabStillAlive = true;
+      } catch (e) { /* gone */ }
+
+      if (tabStillAlive) {
+        await chrome.tabs.update(existing, { url, active: false });
+        tabId = existing;
+      } else {
+        // Stale mapping — forget it and fall through to create fresh.
+        await sessionMgr.removeSession(session_id);
+        tabId = null;
+      }
+    }
+
+    if (!tabId) {
+      // First navigate for this session (or tab was closed): create a
+      // dedicated window. `focused: true` brings it to the foreground
+      // once so the user can see the agent getting to work; subsequent
+      // navigates in the same session use tabs.update and don't steal
+      // focus back.
+      const win = await chrome.windows.create({
+        url,
+        type: 'normal',
+        focused: true,
+        width: 1280,
+        height: 900,
+      });
+      const newTab = win?.tabs?.[0];
+      if (!newTab?.id) {
+        throw new Error('windows.create returned no tab');
+      }
+      tabId = newTab.id;
       await sessionMgr.setTabForSession(session_id, tabId);
+      await sessionMgr.setWindowForSession(session_id, win.id);
     }
 
     // Wait briefly for load, then set title + inject content script.
@@ -1023,6 +1061,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const sid = await sessionMgr.findSessionByTab(tabId);
+  if (!sid) return;
+  await sessionMgr.removeSession(sid);
+  sendToServer({ type: 'browser.tab_closed', session_id: sid });
+  await refreshBadge();
+});
+
+// Dedicated agent window closed by user — clean up the session. With
+// window isolation, tabs.onRemoved also fires for the window's lone
+// tab, but we handle both so a race on ordering can't leak state.
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const sid = await sessionMgr.findSessionByWindow(windowId);
   if (!sid) return;
   await sessionMgr.removeSession(sid);
   sendToServer({ type: 'browser.tab_closed', session_id: sid });

@@ -8,11 +8,13 @@
 //
 // Keys:
 //   session_map       → { [sessionId]: tabId }
+//   window_map        → { [sessionId]: windowId }  // agent-tab isolation
 //   auth_map          → { [sessionId]: { granted_at: isoString } }
 //
 // All methods are async and idempotent.
 
 const KEY_SESSION_MAP = 'session_map';
+const KEY_WINDOW_MAP = 'window_map';
 const KEY_AUTH_MAP = 'auth_map';
 
 async function _read(key, fallback) {
@@ -48,11 +50,46 @@ export async function setTabForSession(sessionId, tabId) {
 
 export async function removeSession(sessionId) {
   const map = await _read(KEY_SESSION_MAP, {});
+  const winMap = await _read(KEY_WINDOW_MAP, {});
   const authMap = await _read(KEY_AUTH_MAP, {});
   delete map[sessionId];
+  delete winMap[sessionId];
   delete authMap[sessionId];
   await _write(KEY_SESSION_MAP, map);
+  await _write(KEY_WINDOW_MAP, winMap);
   await _write(KEY_AUTH_MAP, authMap);
+}
+
+/* --- session → window mapping ---
+ *
+ * Each agent session lives in its own dedicated Chrome window so that
+ * chrome.tabs.captureVisibleTab(windowId) always returns the correct
+ * frame. In a shared window, Chrome's API captures the visible tab of
+ * that window — i.e. whatever the user is focused on — not the tab we
+ * care about, which is how "screenshot shows the chat UI" happened.
+ *
+ * Tab and window mappings are tracked in parallel (not nested) to keep
+ * each single-purpose storage access atomic and to minimise the blast
+ * radius if one map drifts.
+ */
+
+export async function getWindowForSession(sessionId) {
+  const map = await _read(KEY_WINDOW_MAP, {});
+  return map[sessionId] || null;
+}
+
+export async function setWindowForSession(sessionId, windowId) {
+  const map = await _read(KEY_WINDOW_MAP, {});
+  map[sessionId] = windowId;
+  await _write(KEY_WINDOW_MAP, map);
+}
+
+export async function findSessionByWindow(windowId) {
+  const map = await _read(KEY_WINDOW_MAP, {});
+  for (const [sid, wid] of Object.entries(map)) {
+    if (wid === windowId) return sid;
+  }
+  return null;
 }
 
 export async function findSessionByTab(tabId) {
@@ -101,6 +138,7 @@ export async function revokeAuthorization(sessionId) {
  */
 export async function reconcileTabs() {
   const map = await _read(KEY_SESSION_MAP, {});
+  const winMap = await _read(KEY_WINDOW_MAP, {});
   const authMap = await _read(KEY_AUTH_MAP, {});
   const dead = [];
 
@@ -114,12 +152,14 @@ export async function reconcileTabs() {
     }
     if (!alive) {
       delete map[sid];
+      delete winMap[sid];
       delete authMap[sid];
       dead.push(sid);
     }
   }
 
   await _write(KEY_SESSION_MAP, map);
+  await _write(KEY_WINDOW_MAP, winMap);
   await _write(KEY_AUTH_MAP, authMap);
   return dead;
 }
@@ -127,6 +167,9 @@ export async function reconcileTabs() {
 export default {
   getTabForSession,
   setTabForSession,
+  getWindowForSession,
+  setWindowForSession,
+  findSessionByWindow,
   removeSession,
   findSessionByTab,
   listActiveSessions,
