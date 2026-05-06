@@ -56,7 +56,7 @@ function renderWithToken(storage, swStatus, manifestVersion) {
 async function getStorage() {
   return new Promise((r) =>
     chrome.storage.local.get(
-      ['token', 'user_id', 'server_url', 'device_id'],
+      ['token', 'user_id', 'server_url', 'device_id', 'web_ui_url'],
       r,
     ),
   );
@@ -113,16 +113,30 @@ $('device-id').addEventListener('click', async () => {
 });
 
 $('btn-settings').addEventListener('click', async () => {
-  // NEXUS_WEB_UI_URL is baked into the extension at build time (Wave 4);
-  // when unset we fall back to the stored server_url by deriving its
-  // origin. Last resort: localhost:3000 (dev default).
+  // Resolution order for the Web UI base URL:
+  //
+  //   1. storage.web_ui_url — pushed into the extension during the last
+  //      nexus.setup call. This is window.location.origin of the Web UI
+  //      that the user Connect'd from, so it's always correct for the
+  //      user's actual deployment (prod hostnames, :port, https, etc.).
+  //   2. NEXUS_WEB_UI_URL constant — baked in at build time by
+  //      scripts/gen_manifest.py for distributions that know their host
+  //      in advance.
+  //   3. Derive from server_url + :3000 — only works if Web UI and
+  //      Bridge are on the same host with the Web UI at :3000. Dev only.
+  //   4. Hardcoded http://localhost:3000 — last resort.
   const stored = await getStorage();
   let base = '';
-  try {
-    if (typeof NEXUS_WEB_UI_URL !== 'undefined' && NEXUS_WEB_UI_URL) {
-      base = String(NEXUS_WEB_UI_URL).replace(/\/+$/, '');
-    }
-  } catch { /* unset */ }
+  if (stored.web_ui_url && typeof stored.web_ui_url === 'string') {
+    base = stored.web_ui_url.replace(/\/+$/, '');
+  }
+  if (!base) {
+    try {
+      if (typeof NEXUS_WEB_UI_URL !== 'undefined' && NEXUS_WEB_UI_URL) {
+        base = String(NEXUS_WEB_UI_URL).replace(/\/+$/, '');
+      }
+    } catch { /* unset */ }
+  }
   if (!base && stored.server_url) {
     try {
       const u = new URL(
@@ -130,10 +144,6 @@ $('btn-settings').addEventListener('click', async () => {
           s === 'wss:' ? 'https:' : 'http:',
         ),
       );
-      // server_url points at Bridge (:8001); Web UI is usually :3000.
-      // We can't assume that mapping at runtime, so just strip the port
-      // and hope for the best. This is why Wave 4's build-time injection
-      // is the right fix.
       base = `${u.protocol}//${u.hostname}:3000`;
     } catch { /* malformed */ }
   }

@@ -1276,19 +1276,31 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   }
 
   if (type === 'nexus.setup') {
-    const { token, user_id, server_url, device_id } = msg;
+    const { token, user_id, server_url, device_id, web_ui_url } = msg;
     if (!token || !user_id || !server_url) {
       sendResponse({ ok: false, error: 'missing_fields' });
       return true;
     }
     (async () => {
       try {
-        await chrome.storage.local.set({
+        // web_ui_url: the origin of the Web UI that sent this setup
+        // (passed by setupNexusExtension in extension-detect.ts).
+        // Stored so the popup's "Open Settings" button can navigate
+        // back to the right host in production (Web UI and Bridge
+        // are on different hostnames there). Only updated if the
+        // sender actually supplied one — old Web UI builds won't,
+        // and we don't want to clobber a previously-good value with
+        // undefined.
+        const updates = {
           token,
           user_id,
           server_url,
           device_id: device_id || null,
-        });
+        };
+        if (web_ui_url && typeof web_ui_url === 'string') {
+          updates.web_ui_url = web_ui_url.replace(/\/+$/, '');
+        }
+        await chrome.storage.local.set(updates);
         // Kick off reconnect now.
         resetBackoff();
         try { _ws?.close(); } catch (_) { /* ignore */ }
