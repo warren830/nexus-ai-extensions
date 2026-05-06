@@ -358,19 +358,25 @@ async function handleBrowserNavigate(msg) {
     // focused, which is usually the chat UI, not the page we just
     // navigated to. See docs/deployment/PROD_RUNBOOK.md #1c.
     if (existing) {
-      // Session already has a tab — check the tab (and its window)
-      // still exist before attempting to reuse. Users close things.
+      // Session already has a tab — but does it have an isolated
+      // window? Sessions created before the window-isolation patch
+      // (2026-05) have a tabId in some arbitrary (usually the user's
+      // main) window. Those DON'T qualify for reuse any more —
+      // capturing them hits the wrong tab. Force a migration by
+      // dropping the stale mapping and falling through.
+      const existingWindowId = await sessionMgr.getWindowForSession(session_id);
       let tabStillAlive = false;
       try {
         await chrome.tabs.get(existing);
         tabStillAlive = true;
       } catch (e) { /* gone */ }
 
-      if (tabStillAlive) {
+      if (tabStillAlive && existingWindowId != null) {
         await chrome.tabs.update(existing, { url, active: false });
         tabId = existing;
       } else {
-        // Stale mapping — forget it and fall through to create fresh.
+        // Stale mapping (no window, or tab is gone) — forget it and
+        // fall through to create a fresh isolated window.
         await sessionMgr.removeSession(session_id);
         tabId = null;
       }
